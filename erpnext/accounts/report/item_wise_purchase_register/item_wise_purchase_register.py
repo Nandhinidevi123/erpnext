@@ -325,6 +325,7 @@ def get_conditions(filters):
 	):
 		if filters.get(opts[0]):
 			conditions += opts[1]
+
 	if filters.get("item_group"):
 		parent_grps = [filters.get("item_group")]
 		child_groups = []

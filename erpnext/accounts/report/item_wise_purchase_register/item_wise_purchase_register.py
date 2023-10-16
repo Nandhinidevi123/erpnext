@@ -296,10 +296,11 @@ def get_conditions(filters):
 	):
 		if filters.get(opts[0]):
 			conditions += opts[1]
+			
 	if filters.get("item_group"):
 		item_group = get_item_groups_with_children(filters.get("item_group"))
 		conditions += f""" and ifnull(`tabPurchase Invoice Item`.item_group, '') in ({', '.join([f"'{i}'" for i in item_group or ['']])})"""
-	
+
 	if not filters.get("group_by"):
 		conditions += (
 			"ORDER BY `tabPurchase Invoice`.posting_date desc, `tabPurchase Invoice Item`.item_code desc"
@@ -308,7 +309,6 @@ def get_conditions(filters):
 		conditions += get_group_by_conditions(filters, "Purchase Invoice")
 
 	return conditions
-
 
 def get_items(filters, additional_query_columns):
 	conditions = get_conditions(filters)
@@ -365,7 +365,6 @@ def get_purchase_receipts_against_purchase_order(item_list):
 			po_pr_map.setdefault(pr.po_detail, []).append(pr.parent)
 
 	return po_pr_map
-
 
 
 def get_item_groups_with_children(item_group):

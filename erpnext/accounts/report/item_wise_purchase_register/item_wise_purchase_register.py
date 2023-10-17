@@ -297,10 +297,6 @@ def get_conditions(filters):
 		if filters.get(opts[0]):
 			conditions += opts[1]
 			
-	if filters.get("item_group"):
-		item_group = get_item_groups_with_children(filters.get("item_group"))
-		conditions += f""" and ifnull(`tabPurchase Invoice Item`.item_group, '') in ({', '.join([f"'{i}'" for i in item_group or ['']])})"""
-
 	if not filters.get("group_by"):
 		conditions += (
 			"ORDER BY `tabPurchase Invoice`.posting_date desc, `tabPurchase Invoice Item`.item_code desc"
@@ -365,19 +361,3 @@ def get_purchase_receipts_against_purchase_order(item_list):
 			po_pr_map.setdefault(pr.po_detail, []).append(pr.parent)
 
 	return po_pr_map
-
-
-def get_item_groups_with_children(item_group):
-	if not isinstance(item_group, list):
-		item_group = [d.strip() for d in item_group.strip().split(",") if d]
-
-	all_item_groups = []
-	for d in item_group:
-		if frappe.db.exists("Item Group", d):
-			lft, rgt = frappe.db.get_value("Item Group", d, ["lft", "rgt"])
-			children = frappe.get_all("Item Group", filters={"lft": [">=", lft], "rgt": ["<=", rgt]})
-			all_item_groups += [c.name for c in children]
-		else:
-			frappe.throw(_("Item Group: {0} does not exist").format(d))
-
-	return list(set(all_item_groups))

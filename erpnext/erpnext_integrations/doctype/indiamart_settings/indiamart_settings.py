@@ -37,7 +37,7 @@ def indiamart_lead_integration():
 						doc = frappe.new_doc("Lead")
 						doc.update({
 							"first_name":i["SENDER_NAME"] or "",
-							"source":"Indiamrt",
+							"source":"Indiamart",
 							"mobile_no":i["SENDER_MOBILE"] or "",
 							"status":"Lead",
 							"email_id":i["SENDER_EMAIL"] or "",

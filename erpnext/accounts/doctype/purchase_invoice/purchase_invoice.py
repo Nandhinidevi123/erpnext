@@ -527,10 +527,10 @@ class PurchaseInvoice(BuyingController):
 		if self.update_stock == 1:
 			self.repost_future_sle_and_gle()
 
-		if (
-			frappe.db.get_single_value("Buying Settings", "project_update_frequency") == "Each Transaction"
-		):
-			self.update_project()
+		# if (
+		# 	frappe.db.get_single_value("Buying Settings", "project_update_frequency") == "Each Transaction"
+		# ):
+		# 	self.update_project()
 
 		update_linked_doc(self.doctype, self.name, self.inter_company_invoice_reference)
 		self.update_advance_tax_references()

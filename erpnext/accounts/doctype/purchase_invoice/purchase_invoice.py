@@ -1319,8 +1319,7 @@ class PurchaseInvoice(BuyingController):
 						bill_no = %(bill_no)s
 						and supplier = %(supplier)s
 						and name != %(name)s
-						and docstatus < 2
-						and posting_date between %(year_start_date)s and %(year_end_date)s""",
+						and docstatus < 2 """,
 					{
 						"bill_no": self.bill_no,
 						"supplier": self.supplier,

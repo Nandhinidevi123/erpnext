@@ -7,7 +7,7 @@ from typing import Literal
 import frappe
 from frappe.tests.utils import FrappeTestCase, change_settings
 from frappe.utils import random_string
-from frappe.utils.data import add_to_date, now
+from frappe.utils.data import add_to_date, now, flt
 
 from erpnext.manufacturing.doctype.job_card.job_card import (
 	JobCardOverTransferError,
@@ -342,6 +342,14 @@ class TestJobCard(FrappeTestCase):
 	@change_settings(
 		"Manufacturing Settings", {"add_corrective_operation_cost_in_finished_good_valuation": 1}
 	)
+
+	def test_over_production_qty(self):
+		wo_qty=flt(frappe.db.get_value("Work Order",self.work_order,{"qty":7000}))
+  		over_production_percentage=flt(frappe.db.get_single_value("Manufacturing Settings", {"overproduction_percentage_for_work_order":80}))
+		wo_qty = wo_qty + (wo_qty * over_production_percentage / 100)
+  		if flt(self.total_completed_qty,precision) > flt(wo_qty,precision):
+			self.assertRaises(StockOverProductionError, self.submit)
+
 	def test_corrective_costing(self):
 		job_card = frappe.get_last_doc("Job Card", {"work_order": self.work_order.name})
 

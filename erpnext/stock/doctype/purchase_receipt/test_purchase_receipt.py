@@ -1618,7 +1618,7 @@ class TestPurchaseReceipt(IntegrationTestCase):
 		self.assertTrue(return_pi.docstatus == 1)
 
 	def test_disable_last_purchase_rate(self):
-		from erpnext.stock.get_item_details import get_item_details
+		from erpnext.stock.get_item_details import ItemDetailsCtx, get_item_details
 
 		item = make_item(
 			"_Test Disable Last Purchase Rate",
@@ -1633,8 +1633,8 @@ class TestPurchaseReceipt(IntegrationTestCase):
 			item_code=item.name,
 		)
 
-		args = pr.items[0].as_dict()
-		args.update(
+		ctx = ItemDetailsCtx(pr.items[0].as_dict())
+		ctx.update(
 			{
 				"supplier": pr.supplier,
 				"doctype": pr.doctype,
@@ -1646,7 +1646,7 @@ class TestPurchaseReceipt(IntegrationTestCase):
 			}
 		)
 
-		res = get_item_details(args)
+		res = get_item_details(ctx)
 		self.assertEqual(res.get("last_purchase_rate"), 0)
 
 		frappe.db.set_single_value("Buying Settings", "disable_last_purchase_rate", 0)
@@ -1657,7 +1657,7 @@ class TestPurchaseReceipt(IntegrationTestCase):
 			item_code=item.name,
 		)
 
-		res = get_item_details(args)
+		res = get_item_details(ctx)
 		self.assertEqual(res.get("last_purchase_rate"), 100)
 
 	def test_validate_received_qty_for_internal_pr(self):
@@ -3996,6 +3996,42 @@ class TestPurchaseReceipt(IntegrationTestCase):
 		return_pr.reload()
 		self.assertEqual(return_pr.per_billed, 100)
 		self.assertEqual(return_pr.status, "Completed")
+
+	def test_do_not_allow_to_inward_same_serial_no_multiple_times(self):
+		from erpnext.stock.doctype.stock_entry.test_stock_entry import make_stock_entry
+
+		frappe.db.set_single_value("Stock Settings", "allow_existing_serial_no", 0)
+
+		item_code = make_item(
+			"Test Do Not Allow INWD Item 123", {"has_serial_no": 1, "serial_no_series": "SN-TDAISN-.#####"}
+		).name
+
+		pr = make_purchase_receipt(item_code=item_code, qty=1, rate=100, use_serial_batch_fields=1)
+		serial_no = get_serial_nos_from_bundle(pr.items[0].serial_and_batch_bundle)[0]
+
+		status = frappe.db.get_value("Serial No", serial_no, "status")
+		self.assertTrue(status == "Active")
+
+		make_stock_entry(
+			item_code=item_code,
+			source=pr.items[0].warehouse,
+			qty=1,
+			serial_no=serial_no,
+			use_serial_batch_fields=1,
+		)
+
+		status = frappe.db.get_value("Serial No", serial_no, "status")
+		self.assertFalse(status == "Active")
+
+		pr = make_purchase_receipt(
+			item_code=item_code, qty=1, rate=100, use_serial_batch_fields=1, do_not_submit=1
+		)
+		pr.items[0].serial_no = serial_no
+		pr.save()
+
+		self.assertRaises(frappe.exceptions.ValidationError, pr.submit)
+
+		frappe.db.set_single_value("Stock Settings", "allow_existing_serial_no", 1)
 
 
 def prepare_data_for_internal_transfer():

@@ -62,11 +62,12 @@ from erpnext.setup.utils import get_exchange_rate
 from erpnext.stock.doctype.item.item import get_uom_conv_factor
 from erpnext.stock.doctype.packed_item.packed_item import make_packing_list
 from erpnext.stock.get_item_details import (
+	ItemDetailsCtx,
 	_get_item_tax_template,
 	get_conversion_factor,
 	get_item_details,
 	get_item_tax_map,
-	get_item_warehouse,
+	get_item_warehouse_,
 )
 from erpnext.utilities.regional import temporary_flag
 from erpnext.utilities.transaction_base import TransactionBase
@@ -752,24 +753,28 @@ class AccountsController(TransactionBase):
 
 			for item in self.get("items"):
 				if item.get("item_code"):
-					args = parent_dict.copy()
-					args.update(item.as_dict())
+					ctx: ItemDetailsCtx = ItemDetailsCtx(parent_dict.copy())
+					ctx.update(item.as_dict())
 
-					args["doctype"] = self.doctype
-					args["name"] = self.name
-					args["child_doctype"] = item.doctype
-					args["child_docname"] = item.name
-					args["ignore_pricing_rule"] = (
-						self.ignore_pricing_rule if hasattr(self, "ignore_pricing_rule") else 0
+					ctx.update(
+						{
+							"doctype": self.doctype,
+							"name": self.name,
+							"child_doctype": item.doctype,
+							"child_docname": item.name,
+							"ignore_pricing_rule": (
+								self.ignore_pricing_rule if hasattr(self, "ignore_pricing_rule") else 0
+							),
+						}
 					)
 
-					if not args.get("transaction_date"):
-						args["transaction_date"] = args.get("posting_date")
+					if not ctx.transaction_date:
+						ctx.transaction_date = ctx.posting_date
 
 					if self.get("is_subcontracted"):
-						args["is_subcontracted"] = self.is_subcontracted
+						ctx.is_subcontracted = self.is_subcontracted
 
-					ret = get_item_details(args, self, for_validate=for_validate, overwrite_warehouse=False)
+					ret = get_item_details(ctx, self, for_validate=for_validate, overwrite_warehouse=False)
 					for fieldname, value in ret.items():
 						if item.meta.get_field(fieldname) and value is not None:
 							if item.get(fieldname) is None or fieldname in force_item_fields:
@@ -956,6 +961,7 @@ class AccountsController(TransactionBase):
 							"account_head": account_head,
 							"rate": 0,
 							"description": account_head,
+							"set_by_item_tax_template": 1,
 						},
 					)
 
@@ -2487,6 +2493,12 @@ class AccountsController(TransactionBase):
 		secondary_account = get_party_account(secondary_party_type, secondary_party, self.company)
 		primary_account_currency = get_account_currency(primary_account)
 		secondary_account_currency = get_account_currency(secondary_account)
+		default_currency = erpnext.get_company_currency(self.company)
+
+		# Determine if multi-currency journal entry is needed
+		multi_currency = (
+			primary_account_currency != default_currency or secondary_account_currency != default_currency
+		)
 
 		jv = frappe.new_doc("Journal Entry")
 		jv.voucher_type = "Journal Entry"
@@ -2511,7 +2523,7 @@ class AccountsController(TransactionBase):
 		advance_entry.cost_center = self.cost_center or erpnext.get_default_cost_center(self.company)
 		advance_entry.is_advance = "Yes"
 
-		# update dimesions
+		# Update dimensions
 		dimensions_dict = frappe._dict()
 		active_dimensions = get_dimensions()[0]
 		for dim in active_dimensions:
@@ -2520,17 +2532,58 @@ class AccountsController(TransactionBase):
 		reconcilation_entry.update(dimensions_dict)
 		advance_entry.update(dimensions_dict)
 
-		if self.doctype == "Sales Invoice":
-			reconcilation_entry.credit_in_account_currency = self.outstanding_amount
-			advance_entry.debit_in_account_currency = self.outstanding_amount
+		# Calculate exchange rates if necessary
+		if multi_currency:
+			# Exchange rates for primary and secondary accounts
+			exc_rate_primary_to_default = (
+				1
+				if primary_account_currency == default_currency
+				else get_exchange_rate(primary_account_currency, default_currency, self.posting_date)
+			)
+			exc_rate_secondary_to_default = (
+				1
+				if secondary_account_currency == default_currency
+				else get_exchange_rate(secondary_account_currency, default_currency, self.posting_date)
+			)
+			exc_rate_secondary_to_primary = (
+				1
+				if secondary_account_currency == primary_account_currency
+				else get_exchange_rate(
+					secondary_account_currency, primary_account_currency, self.posting_date
+				)
+			)
+
+			# Convert outstanding amount from secondary to primary account currency, if needed
+
+			os_in_default_currency = self.outstanding_amount * exc_rate_secondary_to_default
+			os_in_primary_currency = self.outstanding_amount * exc_rate_secondary_to_primary
+
+			if self.doctype == "Sales Invoice":
+				# Calculate credit and debit values for reconciliation and advance entries
+				reconcilation_entry.credit_in_account_currency = self.outstanding_amount
+				reconcilation_entry.credit = os_in_default_currency
+
+				advance_entry.debit_in_account_currency = os_in_primary_currency
+				advance_entry.debit = os_in_default_currency
+			else:
+				advance_entry.credit_in_account_currency = os_in_primary_currency
+				advance_entry.credit = os_in_default_currency
+
+				reconcilation_entry.debit_in_account_currency = self.outstanding_amount
+				reconcilation_entry.debit = os_in_default_currency
+
+			# Set exchange rates for entries
+			reconcilation_entry.exchange_rate = exc_rate_secondary_to_default
+			advance_entry.exchange_rate = exc_rate_primary_to_default
 		else:
-			advance_entry.credit_in_account_currency = self.outstanding_amount
-			reconcilation_entry.debit_in_account_currency = self.outstanding_amount
+			if self.doctype == "Sales Invoice":
+				reconcilation_entry.credit_in_account_currency = self.outstanding_amount
+				advance_entry.debit_in_account_currency = self.outstanding_amount
+			else:
+				advance_entry.credit_in_account_currency = self.outstanding_amount
+				reconcilation_entry.debit_in_account_currency = self.outstanding_amount
 
-		default_currency = erpnext.get_company_currency(self.company)
-		if primary_account_currency != default_currency or secondary_account_currency != default_currency:
-			jv.multi_currency = 1
-
+		jv.multi_currency = multi_currency
 		jv.append("accounts", reconcilation_entry)
 		jv.append("accounts", advance_entry)
 
@@ -2893,6 +2946,7 @@ def get_advance_payment_entries(
 	party_account,
 	order_doctype,
 	order_list=None,
+	default_advance_account=None,
 	include_unallocated=True,
 	against_all_orders=False,
 	limit=None,
@@ -2906,6 +2960,7 @@ def get_advance_payment_entries(
 			party_type,
 			party,
 			party_account,
+			default_advance_account,
 			limit,
 			condition,
 		)
@@ -2929,6 +2984,7 @@ def get_advance_payment_entries(
 			party_type,
 			party,
 			party_account,
+			default_advance_account,
 			limit,
 			condition,
 		)
@@ -2944,6 +3000,7 @@ def get_common_query(
 	party_type,
 	party,
 	party_account,
+	default_advance_account,
 	limit,
 	condition,
 ):
@@ -2965,14 +3022,22 @@ def get_common_query(
 		.where(payment_entry.docstatus == 1)
 	)
 
-	if payment_type == "Receive":
-		q = q.select((payment_entry.paid_from_account_currency).as_("currency"))
-		q = q.select(payment_entry.paid_from)
-		q = q.where(payment_entry.paid_from.isin(party_account))
+	field = "paid_from" if payment_type == "Receive" else "paid_to"
+
+	q = q.select((payment_entry[f"{field}_account_currency"]).as_("currency"))
+	q = q.select(payment_entry[field])
+	account_condition = payment_entry[field].isin(party_account)
+	if default_advance_account:
+		q = q.where(
+			account_condition
+			| (
+				(payment_entry[field] == default_advance_account)
+				& (payment_entry.book_advance_payments_in_separate_party_account == 1)
+			)
+		)
+
 	else:
-		q = q.select((payment_entry.paid_to_account_currency).as_("currency"))
-		q = q.select(payment_entry.paid_to)
-		q = q.where(payment_entry.paid_to.isin(party_account))
+		q = q.where(account_condition)
 
 	if payment_type == "Receive":
 		q = q.select((payment_entry.source_exchange_rate).as_("exchange_rate"))
@@ -3161,18 +3226,21 @@ def get_supplier_block_status(party_name):
 
 
 def set_child_tax_template_and_map(item, child_item, parent_doc):
-	args = {
-		"item_code": item.item_code,
-		"posting_date": parent_doc.transaction_date,
-		"tax_category": parent_doc.get("tax_category"),
-		"company": parent_doc.get("company"),
-	}
+	ctx = ItemDetailsCtx(
+		{
+			"item_code": item.item_code,
+			"posting_date": parent_doc.transaction_date,
+			"tax_category": parent_doc.get("tax_category"),
+			"company": parent_doc.get("company"),
+		}
+	)
 
-	child_item.item_tax_template = _get_item_tax_template(args, item.taxes)
-	if child_item.get("item_tax_template"):
-		child_item.item_tax_rate = get_item_tax_map(
-			parent_doc.get("company"), child_item.item_tax_template, as_json=True
-		)
+	child_item.item_tax_template = _get_item_tax_template(ctx, item.taxes)
+	child_item.item_tax_rate = get_item_tax_map(
+		doc=parent_doc,
+		tax_template=child_item.item_tax_template,
+		as_json=True,
+	)
 
 
 def add_taxes_from_tax_template(child_item, parent_doc, db_insert=True):
@@ -3195,6 +3263,7 @@ def add_taxes_from_tax_template(child_item, parent_doc, db_insert=True):
 						"charge_type": "On Net Total",
 						"account_head": tax_type,
 						"rate": tax_rate,
+						"set_by_item_tax_template": 1,
 					}
 				)
 				if parent_doc.doctype == "Purchase Order":
@@ -3218,7 +3287,7 @@ def set_order_defaults(parent_doctype, parent_doctype_name, child_doctype, child
 	child_item.update({date_fieldname: trans_item.get(date_fieldname) or p_doc.get(date_fieldname)})
 	child_item.stock_uom = item.stock_uom
 	child_item.uom = trans_item.get("uom") or item.stock_uom
-	child_item.warehouse = get_item_warehouse(item, p_doc, overwrite_warehouse=True)
+	child_item.warehouse = get_item_warehouse_(p_doc, item, overwrite_warehouse=True)
 	conversion_factor = flt(get_conversion_factor(item.item_code, child_item.uom).get("conversion_factor"))
 	child_item.conversion_factor = flt(trans_item.get("conversion_factor")) or conversion_factor
 
@@ -3227,7 +3296,7 @@ def set_order_defaults(parent_doctype, parent_doctype_name, child_doctype, child
 		child_item.base_rate = 1
 		child_item.base_amount = 1
 	if child_doctype == "Sales Order Item":
-		child_item.warehouse = get_item_warehouse(item, p_doc, overwrite_warehouse=True)
+		child_item.warehouse = get_item_warehouse_(p_doc, item, overwrite_warehouse=True)
 		if not child_item.warehouse:
 			frappe.throw(
 				_(
